@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import requests
 import random
 import time
+import os
 from bs4 import BeautifulSoup
 from pydantic import BaseModel
 from typing import Optional
@@ -16,10 +17,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-HEADERS_LIST = [
-    {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'},
-    {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36'},
-]
+SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "")
+SCRAPER_API_URL = "http://api.scraperapi.com"
 
 class ProductResponse(BaseModel):
     product_name: str
@@ -37,18 +36,26 @@ def price_to_int(price_str):
     cleaned = ''.join(c for c in price_str if c.isdigit() or c == ',')
     return int(cleaned.replace(',', '')) if cleaned else None
 
-def safe_request(url, max_retries=3):
+def scrape_with_scraperapi(url, max_retries=3):
+    params = {
+        'api_key': SCRAPER_API_KEY,
+        'url': url,
+        'render': 'false',
+        'country_code': 'in',
+    }
+    
     for _ in range(max_retries):
         try:
-            headers = random.choice(HEADERS_LIST)
-            response = requests.get(url, headers=headers)
-            if response.status_code == 429:
-                time.sleep(random.uniform(1, 5))
+            response = requests.get(SCRAPER_API_URL, params=params, timeout=30)
+            if response.status_code == 200:
+                return response
+            elif response.status_code == 429:
+                time.sleep(random.uniform(1, 3))
                 continue
-            return response
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"ScraperAPI error: {e}")
             time.sleep(2)
+    
     return None
 
 @app.get("/compare/{product_name}", response_model=ProductResponse)
@@ -66,8 +73,8 @@ async def compare_prices(product_name: str):
     
     try:
         # Amazon Search & Extract URL
-        amazon_url = f"https://www.amazon.in/s?k={product_name.replace(' ', '+')}"
-        amazon_res = safe_request(amazon_url)
+        amazon_search_url = f"https://www.amazon.in/s?k={product_name.replace(' ', '+')}"
+        amazon_res = scrape_with_scraperapi(amazon_search_url)
         
         if not amazon_res:
             response_data["error"] = "Failed to fetch Amazon search results"
@@ -81,7 +88,7 @@ async def compare_prices(product_name: str):
             response_data["amazon_url"] = amazon_product_url
             
             # Get Amazon price
-            amazon_res = safe_request(amazon_product_url)
+            amazon_res = scrape_with_scraperapi(amazon_product_url)
             if amazon_res:
                 soup_amazon = BeautifulSoup(amazon_res.text, 'html.parser')
                 amazon_price_el = soup_amazon.select_one('span.a-price-whole')
@@ -89,8 +96,8 @@ async def compare_prices(product_name: str):
                     response_data["amazon_price"] = price_to_int(amazon_price_el.text)
         
         # Flipkart Search & Extract URL
-        flipkart_url = f"https://www.flipkart.com/search?q={product_name.replace(' ', '%20')}"
-        flipkart_res = safe_request(flipkart_url)
+        flipkart_search_url = f"https://www.flipkart.com/search?q={product_name.replace(' ', '%20')}"
+        flipkart_res = scrape_with_scraperapi(flipkart_search_url)
         
         if not flipkart_res:
             response_data["error"] = "Failed to fetch Flipkart search results"
@@ -107,12 +114,11 @@ async def compare_prices(product_name: str):
                 response_data["flipkart_url"] = flipkart_product_url
                 
                 # Get Flipkart price
-                flipkart_res = safe_request(flipkart_product_url)
+                flipkart_res = scrape_with_scraperapi(flipkart_product_url)
                 if flipkart_res:
                     soup_flipkart = BeautifulSoup(flipkart_res.text, 'html.parser')
-                    flipkart_price_el = soup_flipkart.select_one('div._30jeq3._16Jk6d')  # Updated selector
-                    if not flipkart_price_el:
-                        flipkart_price_el = soup_flipkart.select_one('div.Nx9bqj.CxhGGd')
+                    price_selectors ='div.Nx9bqj.CxhGGd'
+                    flipkart_price_el = soup_flipkart.select_one(price_selectors)
                     if flipkart_price_el:
                         response_data["flipkart_price"] = price_to_int(flipkart_price_el.text)
                 break
