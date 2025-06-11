@@ -37,9 +37,6 @@ def price_to_int(price_str):
     return int(cleaned.replace(',', '')) if cleaned else None
 
 def scrape_with_scraperapi(url, max_retries=3):
-    """
-    Make requests through ScraperAPI with retry logic
-    """
     params = {
         'api_key': SCRAPER_API_KEY,
         'url': url,
